@@ -13,34 +13,47 @@ var (
 	ErrJSRedirectionTimeout = errors.New("JS redirection timeout")
 )
 
-type RoundTripFunc func(*http.Request) (*http.Response, error)
-
 type Browser struct {
 	Timeout time.Duration
-	Certs   *mitm.CertPool
+	certs   *mitm.CertPool
+	quit    chan bool
 }
 
-func (t *Browser) Browse(req *http.Request, callback RoundTripFunc) error {
+func NewBrowser(timeout time.Duration, certs *mitm.CertPool) *Browser {
+	return &Browser{
+		Timeout: timeout,
+		certs:   certs,
+		quit:    make(chan bool),
+	}
+}
+
+func (t *Browser) Browse(req *http.Request, callback http.HandlerFunc) error {
 	if t.Timeout == 0 {
 		t.Timeout = 10 * time.Second
 	}
-	proxy := newProxy(t.Timeout, t.Certs)
+	proxy := newProxy(t.Timeout, t.certs, callback)
 	defer proxy.Close()
 
-	browser, err := startSurf(req.URL.String(), proxy.URL())
+	surf, err := startSurf(req.URL.String(), proxy.URL())
 	if err != nil {
 		return nil
 	}
-	defer browser.Close()
+	defer surf.Close()
 
 	select {
+	case <-t.quit:
 	case <-time.After(t.Timeout):
 		return ErrJSRedirectionTimeout
 	case err := <-proxy.ErrChan():
 		return err
-	case err := <-errChan(browser.Wait):
+	case err := <-errChan(surf.Wait):
 		return err
 	}
+	return nil
+}
+
+func (b *Browser) Close() error {
+	b.quit <- true
 	return nil
 }
 
@@ -52,11 +65,12 @@ type fakeProxy struct {
 	errChan  chan error
 }
 
-func newProxy(timeout time.Duration, certs *mitm.CertPool) *fakeProxy {
+func newProxy(timeout time.Duration, certs *mitm.CertPool, callback http.HandlerFunc) *fakeProxy {
 	fp := &fakeProxy{
-		certs:   certs,
-		timeout: timeout,
-		errChan: make(chan error),
+		certs:    certs,
+		timeout:  timeout,
+		callback: callback,
+		errChan:  make(chan error),
 	}
 
 	fp.proxy = httptest.NewServer(http.HandlerFunc(fp.serve))

@@ -27,11 +27,11 @@ func NewBrowser(timeout time.Duration, certs *mitm.CertPool) *Browser {
 	}
 }
 
-func (t *Browser) Browse(req *http.Request, callback http.HandlerFunc) error {
+func (t *Browser) Browse(req *http.Request, serve http.HandlerFunc) error {
 	if t.Timeout == 0 {
 		t.Timeout = 10 * time.Second
 	}
-	proxy := newProxy(t.Timeout, t.certs, callback)
+	proxy := newProxy(t.Timeout, t.certs, serve)
 	defer proxy.Close()
 
 	surf, err := startSurf(req.URL.String(), proxy.URL())
@@ -58,19 +58,19 @@ func (b *Browser) Close() error {
 }
 
 type fakeProxy struct {
-	callback http.HandlerFunc
-	certs    *mitm.CertPool
-	timeout  time.Duration
-	proxy    *httptest.Server
-	errChan  chan error
+	serveHTTP http.HandlerFunc
+	certs     *mitm.CertPool
+	timeout   time.Duration
+	proxy     *httptest.Server
+	errChan   chan error
 }
 
-func newProxy(timeout time.Duration, certs *mitm.CertPool, callback http.HandlerFunc) *fakeProxy {
+func newProxy(timeout time.Duration, certs *mitm.CertPool, serveHTTP http.HandlerFunc) *fakeProxy {
 	fp := &fakeProxy{
-		certs:    certs,
-		timeout:  timeout,
-		callback: callback,
-		errChan:  make(chan error),
+		certs:     certs,
+		timeout:   timeout,
+		serveHTTP: serveHTTP,
+		errChan:   make(chan error),
 	}
 
 	fp.proxy = httptest.NewServer(http.HandlerFunc(fp.serve))
@@ -99,9 +99,9 @@ func (p *fakeProxy) Close() error {
 
 func (p *fakeProxy) serve(w http.ResponseWriter, req *http.Request) {
 	if req.Method == "GET" {
-		p.callback(w, req)
+		p.serveHTTP(w, req)
 	} else if req.Method == "CONNECT" {
-		err := p.certs.ServeHTTPS(w, req, p.callback)
+		err := p.certs.ServeHTTPS(w, req, p.serveHTTP)
 		if err != nil {
 			p.setError(errors.Wrap(err))
 		}
